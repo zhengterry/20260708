@@ -2,30 +2,31 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from './schema';
 
-// 懒加载单例：Vercel 构建时不连接数据库，运行时按需创建
 let _db: ReturnType<typeof drizzle<typeof schema>> | null = null;
 
-function createDb() {
+function getDbInstance() {
+  if (_db) return _db;
+
   const url = process.env.DATABASE_URL;
   if (!url) {
-    // 构建阶段：返回一个"无操作"代理，不会真连数据库
-    const noop = new Proxy({}, {
-      get: (_, prop) => {
-        if (prop === 'then') return undefined;
-        return (..._args: unknown[]) => noop;
-      },
-    });
-    return noop as unknown as ReturnType<typeof drizzle<typeof schema>>;
+    throw new Error('DATABASE_URL 未配置');
   }
+
   const client = postgres(url, { max: 10, idle_timeout: 20, connect_timeout: 10 });
-  return drizzle(client, { schema });
+  _db = drizzle(client, { schema });
+  return _db;
 }
 
-// 通过 Proxy 实现完全懒加载：第一次访问任何属性时才初始化
+// 通过 Proxy 懒加载，类型安全
 export const db = new Proxy({} as ReturnType<typeof drizzle<typeof schema>>, {
   get(_target, prop) {
-    if (!_db) _db = createDb();
-    return (_db as unknown as Record<string | symbol, unknown>)[prop];
+    const real = getDbInstance();
+    const value = (real as any)[prop];
+    // 如果是函数，绑定 this
+    if (typeof value === 'function') {
+      return value.bind(real);
+    }
+    return value;
   },
 });
 
